@@ -1,2 +1,2 @@
 # My_VideoChatGPT
-VideoChatGPT source code comments.
+对VideoChatGPT的源码注释学习
