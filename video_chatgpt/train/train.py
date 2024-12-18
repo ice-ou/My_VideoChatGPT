@@ -21,7 +21,7 @@ DEFAULT_BOS_TOKEN = "</s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
 
-@dataclass
+@dataclass  # 装饰器，自动生成特殊方法（如 __init__, __repr__, __eq__ 等）的类。使用 @dataclass 可以简化类的定义，减少样板代码。
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
     version: Optional[str] = field(default="v0")
@@ -161,17 +161,18 @@ def preprocess_multimodal(
     if not is_multimodal:
         return sources
 
-    for source in sources:
+    for source in sources:  # len(sources)=1
         if multimodal_cfg['sep_video_conv_front']:
-            assert DEFAULT_VIDEO_TOKEN in source[0]['value']
-            source[0]['value'] = source[0]['value'].replace(DEFAULT_VIDEO_TOKEN, '').strip()
+            assert DEFAULT_VIDEO_TOKEN in source[0]['value']  # 确保包含视频标志<video>，0代表是human,1代表是gpt
+            source[0]['value'] = source[0]['value'].replace(DEFAULT_VIDEO_TOKEN, '').strip()  # 移除视频标志，并去除前后空格
             source[0]['value'] = DEFAULT_VIDEO_TOKEN + conversation_lib.default_conversation.sep + \
-                                 conversation_lib.default_conversation.roles[0] + ": " + source[0]['value']
+                                 conversation_lib.default_conversation.roles[0] + ": " + source[0]['value']  # 重新组合为新字符串
+
         for sentence in source:
             replace_token = DEFAULT_VIDEO_PATCH_TOKEN * video_token_len
             if multimodal_cfg['use_vid_start_end']:
                 replace_token = DEFAULT_VID_START_TOKEN + replace_token + DEFAULT_VID_END_TOKEN
-            sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, replace_token)
+            sentence["value"] = sentence["value"].replace(DEFAULT_VIDEO_TOKEN, replace_token)  #  将句子中的<video>替换为356+2个patch_token，356为视频标志，2为开始和结束标志
 
     return sources
 
@@ -209,7 +210,7 @@ def preprocess_v1(
 
     assert conv.sep_style == conversation_lib.SeparatorStyle.TWO
 
-    # Mask targets
+    # Mask targets  目标掩码，将human和视频的token置为-100，忽略这一部分，让模型只将gpt的values作为目标
     sep = conv.sep + conv.roles[1] + ": "
     for conversation, target in zip(conversations, targets):
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
@@ -331,6 +332,7 @@ def preprocess(
     4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
     """
     if conversation_lib.default_conversation.version == "v1":
+        #  当前使用的是v1
         return preprocess_v1(sources, tokenizer)
     if conversation_lib.default_conversation.version == "mpt":
         return preprocess_mpt(sources, tokenizer)
@@ -384,7 +386,7 @@ class LazySupervisedDataset(Dataset):
                  multimodal_cfg: dict):
         super(LazySupervisedDataset, self).__init__()
         logging.warning("Loading data...")
-        list_data_dict = json.load(open(data_path, "r"))
+        list_data_dict = json.load(open(data_path, "r"))  #  json文件
 
         logging.warning("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
@@ -394,22 +396,25 @@ class LazySupervisedDataset(Dataset):
     def __len__(self):
         return len(self.list_data_dict)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:  # 返回值是一个字典，key是字符串，value是tensor
         sources = self.list_data_dict[i]
-        if isinstance(i, int):
+        if isinstance(i, int):  #  检查i是否是整型变量，若是则将sources转换为列表
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
-        if 'video' in sources[0]:
-            video_file = self.list_data_dict[i]['video']
-            video_folder = self.multimodal_cfg['video_folder']
+        if 'video' in sources[0]:  # 如果包含视频
+            video_file = self.list_data_dict[i]['video']  #  对应的视频文件名(.pkl)
+            video_folder = self.multimodal_cfg['video_folder']  # 视频特征所在的文件夹
             with open(f"{video_folder}/{video_file}", "rb") as f:
                 features = pickle.load(f)
-
+            
+            #  新的视频token长度
             cur_token_len = 356  # 100 temporal + 256 spatial, TODO: Hard Coding is not good
+            # 将句子中视频标记<video>替换为多个<vid_patch>，返回替换后的句子，注意文本没有变化
             sources = preprocess_multimodal(
-                copy.deepcopy([e["conversations"] for e in sources]),
+                copy.deepcopy([e["conversations"] for e in sources]),  #  深拷贝对话数据(两个human和gpt)，确保不会修改原始数据
                 self.multimodal_cfg, cur_token_len)
 
+        #  将文本转换为一个个token，并返回一个字典，其中包含input_ids和labels（其中labels是将input_ids中human和视频部分进行掩码处理）
         data_dict = preprocess(
             sources,
             self.tokenizer)
@@ -419,7 +424,7 @@ class LazySupervisedDataset(Dataset):
 
         # video exist in the data
         if 'video' in self.list_data_dict[i]:
-            data_dict["video"] = features
+            data_dict["video"] = features  # 视频的特征向量
 
         return data_dict
 
@@ -472,7 +477,7 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                                     video_folder=data_args.video_folder,
                                     frame_aspect_ratio=data_args.frame_aspect_ratio,
                                     use_vid_start_end=getattr(data_args, 'mm_use_vid_start_end', False)))
-    # 数据整理器，将合并样本，以便进行批量处理
+    # 数据整理器，将合并样本，以便进行批量处理（batch_size）
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
@@ -509,6 +514,7 @@ def train():
     # 指定对话模板
     conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1_1"]
 
+    # 初始化视觉模块,加入mm_projector
     model_vision_dict = model.get_model().initialize_vision_modules(
         pretrain_mm_mlp_adapter=model_args.pretrain_mm_mlp_adapter
     )
@@ -530,7 +536,7 @@ def train():
         for p in model.get_model().mm_projector.parameters():
             p.requires_grad = False
 
-    # 初始化视觉分词器，mm_use_vid_start_end表示是否使用视频开始和结束标记
+    # 初始化视觉分词器(将一个视频标记<video>转化为token)，mm_use_vid_start_end表示是否使用视频开始和结束标记
     model.config.mm_use_vid_start_end = data_args.mm_use_vid_start_end = model_args.mm_use_vid_start_end
     vision_config.use_vid_start_end = training_args.use_vid_start_end = model_args.mm_use_vid_start_end
     model.config.sep_video_conv_front = data_args.sep_video_conv_front
